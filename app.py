@@ -17,7 +17,7 @@ class GitLabMRCommentsApp:
     def __init__(self):
         self.session_state_keys = [
             'gitlab_url', 'project_id', 'private_token', 'mr_id_list', 
-            'results_data', 'last_run_successful'
+            'results_data', 'last_run_successful', 'mr_state'
         ]
         self._initialize_session_state()
 
@@ -29,9 +29,9 @@ class GitLabMRCommentsApp:
             'private_token': '',
             'mr_id_list': '',
             'results_data': [],
-            'last_run_successful': False
+            'last_run_successful': False,
+            'mr_state': 'all'  # Default to all
         }
-        
         for key, default_value in defaults.items():
             if key not in st.session_state:
                 st.session_state[key] = default_value
@@ -41,34 +41,29 @@ class GitLabMRCommentsApp:
         mrs = []
         page = 1
         per_page = 50
-        
+        mr_state = st.session_state.get('mr_state', 'all')
         with st.spinner("Fetching merge requests..."):
             while True:
                 url = f"{gitlab_url}/api/v4/projects/{project_id}/merge_requests"
                 params = {
-                    "state": "all",
+                    "state": mr_state,
                     "labels": "NashTech",
                     "per_page": per_page,
                     "page": page
                 }
-                
                 try:
                     resp = requests.get(url, headers=headers, params=params, timeout=30)
                     resp.raise_for_status()
                     data = resp.json()
-                    
                     if not data:
                         break
-                    
                     mrs.extend(data)
                     if len(data) < per_page:
                         break
                     page += 1
-                    
                 except requests.exceptions.RequestException as e:
                     st.error(f"Error fetching merge requests: {e}")
                     return []
-        
         return mrs
 
     def get_mr_by_ids(self, gitlab_url: str, project_id: str, headers: Dict[str, str], mr_ids: List[int]) -> List[Dict[str, Any]]:
@@ -297,21 +292,18 @@ class GitLabMRCommentsApp:
         
         # Configuration section
         with st.expander("⚙️ Configuration", expanded=True):
-            col1, col2 = st.columns(2)
-            
+            col1, col2, col3 = st.columns(3)
             with col1:
                 gitlab_url = st.text_input(
                     "GitLab URL",
                     value=st.session_state.gitlab_url,
                     help="The base URL of your GitLab instance"
                 )
-                
                 project_id = st.text_input(
                     "Project ID",
                     value=st.session_state.project_id,
                     help="The GitLab project ID"
                 )
-            
             with col2:
                 private_token = st.text_input(
                     "Private Token",
@@ -319,12 +311,20 @@ class GitLabMRCommentsApp:
                     type="password",
                     help="Your GitLab private access token"
                 )
-                
                 mr_id_list = st.text_input(
                     "MR IDs (optional)",
                     value=st.session_state.mr_id_list,
                     help="Comma-separated list of MR IDs to filter (leave empty for all)"
                 )
+            with col3:
+                mr_state_options = ["all", "opened", "merged"]
+                mr_state = st.selectbox(
+                    "MR State",
+                    options=mr_state_options,
+                    index=mr_state_options.index(st.session_state.mr_state) if st.session_state.mr_state in mr_state_options else 0,
+                    help="Select which merge requests to fetch: all, opened, or merged."
+                )
+                st.session_state.mr_state = mr_state
         
         # Parse MR ID list
         parsed_mr_ids = None
@@ -351,15 +351,14 @@ class GitLabMRCommentsApp:
             if not all([gitlab_url, project_id, private_token]):
                 st.error("Please fill in all required configuration fields.")
                 return
-            
             # Update session state
             st.session_state.update({
                 'gitlab_url': gitlab_url,
                 'project_id': project_id,
                 'private_token': private_token,
-                'mr_id_list': mr_id_list
+                'mr_id_list': mr_id_list,
+                'mr_state': mr_state
             })
-            
             # Fetch data
             with st.spinner("Fetching data from GitLab..."):
                 results = self.fetch_data(gitlab_url, project_id, private_token, parsed_mr_ids)
@@ -451,13 +450,10 @@ class GitLabMRCommentsApp:
         
         for mr_title, code_locations in grouped_data.items():
             total_mr_comments = sum(len(comments) for comments in code_locations.values())
-            
             # Get MR ID from first comment
             first_comment = next(iter(next(iter(code_locations.values()))))
             mr_id = first_comment['MR ID']
-            
             with st.expander(f"📋 MR: {mr_title} (ID: {mr_id}) - {total_mr_comments} comments", expanded=False):
-                
                 # Show code locations within this MR
                 for location_key, comments in code_locations.items():
                     if location_key == "general":
@@ -465,25 +461,23 @@ class GitLabMRCommentsApp:
                     else:
                         file_path, line_num = location_key.split(":", 1)
                         st.markdown(f"#### 📍 {file_path}:{line_num} ({len(comments)} comments)")
-                        
                         # Show code snippet once if available
                         if comments and comments[0]["Code Snippet"]:
                             st.markdown("**Code Snippet:**")
                             st.code(comments[0]["Code Snippet"], language="java")
-                    
                     # Show all comments for this location
                     for i, comment in enumerate(comments):
                         col1, col2 = st.columns([3, 1])
                         with col1:
-                            st.markdown(f"**Comment {i+1} by {comment['Author']}**")
+                            if i == 0:
+                                st.markdown(f"<span style='background-color:#ffe066; padding:2px 6px; border-radius:4px;'><b>Comment {i+1} by {comment['Author']} (Starting Comment)</b></span>", unsafe_allow_html=True)
+                            else:
+                                st.markdown(f"**Comment {i+1} by {comment['Author']}**")
                         with col2:
                             st.markdown(f"*{comment['Created At'][:19]}*")
-                        
                         st.markdown(comment["Review Comment"])
-                        
                         if i < len(comments) - 1:
                             st.markdown("---")
-                    
                     st.markdown("")  # Add space between code locations
 
 def main():
